@@ -1,0 +1,228 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "UpsideDownGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 180, 0, 70)
+mainFrame.Position = UDim2.new(0, 16, 0, 16)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = mainFrame
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent = titleBar
+
+local titleFix = Instance.new("Frame")
+titleFix.Size = UDim2.new(1, 0, 0, 8)
+titleFix.Position = UDim2.new(0, 0, 1, -8)
+titleFix.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+titleFix.BorderSizePixel = 0
+titleFix.Parent = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -30, 1, 0)
+titleLabel.Position = UDim2.new(0, 10, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "FE Upside Down"
+titleLabel.TextColor3 = Color3.fromRGB(210, 210, 210)
+titleLabel.TextSize = 12
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Size = UDim2.new(0, 20, 0, 20)
+minimizeBtn.Position = UDim2.new(1, -24, 0, 4)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+minimizeBtn.Text = "—"
+minimizeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+minimizeBtn.TextSize = 10
+minimizeBtn.Font = Enum.Font.GothamBold
+minimizeBtn.BorderSizePixel = 0
+minimizeBtn.Parent = titleBar
+
+local minCorner = Instance.new("UICorner")
+minCorner.CornerRadius = UDim.new(0, 4)
+minCorner.Parent = minimizeBtn
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1, 0, 1, -28)
+contentFrame.Position = UDim2.new(0, 0, 0, 28)
+contentFrame.BackgroundTransparency = 1
+contentFrame.Parent = mainFrame
+
+local toggleLabel = Instance.new("TextLabel")
+toggleLabel.Size = UDim2.new(1, -50, 1, 0)
+toggleLabel.Position = UDim2.new(0, 12, 0, 0)
+toggleLabel.BackgroundTransparency = 1
+toggleLabel.Text = "Upside Down"
+toggleLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+toggleLabel.TextSize = 12
+toggleLabel.Font = Enum.Font.Gotham
+toggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+toggleLabel.Parent = contentFrame
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 36, 0, 20)
+toggleBtn.Position = UDim2.new(1, -46, 0.5, -10)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+toggleBtn.Text = ""
+toggleBtn.BorderSizePixel = 0
+toggleBtn.Parent = contentFrame
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(1, 0)
+toggleCorner.Parent = toggleBtn
+
+local toggleKnob = Instance.new("Frame")
+toggleKnob.Size = UDim2.new(0, 14, 0, 14)
+toggleKnob.Position = UDim2.new(0, 3, 0.5, -7)
+toggleKnob.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+toggleKnob.BorderSizePixel = 0
+toggleKnob.Parent = toggleBtn
+
+local knobCorner = Instance.new("UICorner")
+knobCorner.CornerRadius = UDim.new(1, 0)
+knobCorner.Parent = toggleKnob
+
+local minimized = false
+local fullSize = UDim2.new(0, 180, 0, 70)
+local miniSize = UDim2.new(0, 180, 0, 28)
+
+minimizeBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	mainFrame.Size = minimized and miniSize or fullSize
+	contentFrame.Visible = not minimized
+	minimizeBtn.Text = minimized and "+" or "—"
+end)
+
+local enabled = false
+local SPEED = 16
+local FLIP_OFFSET = 3.2
+local TP_SPEED = 1.3
+
+local renderConnection = nil
+local tpwalkConnection = nil
+local bv, gyro
+
+local function stopTPWalk()
+	if tpwalkConnection then
+		tpwalkConnection:Disconnect()
+		tpwalkConnection = nil
+	end
+end
+
+local function startTPWalk(char, humanoid)
+	stopTPWalk()
+	tpwalkConnection = RunService.Heartbeat:Connect(function(delta)
+		if not char or not humanoid or not humanoid.Parent then
+			stopTPWalk()
+			return
+		end
+		if humanoid.MoveDirection.Magnitude > 0 then
+			char:TranslateBy(humanoid.MoveDirection * TP_SPEED * delta * 10)
+		end
+	end)
+end
+
+local function enableEffect(char)
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local humanoid = char:FindFirstChild("Humanoid")
+	if not root or not humanoid then return end
+
+	humanoid.PlatformStand = true
+
+	bv = Instance.new("BodyVelocity")
+	bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+	bv.Velocity = Vector3.zero
+	bv.Parent = root
+
+	gyro = Instance.new("BodyGyro")
+	gyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+	gyro.P = 1e6
+	gyro.D = 200
+	gyro.Parent = root
+
+	startTPWalk(char, humanoid)
+
+	renderConnection = RunService.RenderStepped:Connect(function()
+		if not root or not root.Parent then return end
+
+		local cam = workspace.CurrentCamera
+		local camCF = cam.CFrame
+		local forward = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z).Unit
+		local right   = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z).Unit
+
+		local move = Vector3.zero
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + forward end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - forward end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - right   end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + right   end
+
+		local rayParams = RaycastParams.new()
+		rayParams.FilterDescendantsInstances = {char}
+		rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+		local result = workspace:Raycast(root.Position, Vector3.new(0, -20, 0), rayParams)
+		local targetY = result and (result.Position.Y + FLIP_OFFSET) or root.Position.Y
+		local yVel = (targetY - root.Position.Y) * 10
+
+		bv.Velocity = (move.Magnitude > 0 and move.Unit * SPEED or Vector3.zero) + Vector3.new(0, yVel, 0)
+
+		local facingDir = move.Magnitude > 0 and move.Unit or forward
+		gyro.CFrame = CFrame.new(Vector3.zero, facingDir) * CFrame.Angles(math.rad(180), 0, 0)
+	end)
+end
+
+local function disableEffect(char)
+	if renderConnection then renderConnection:Disconnect() renderConnection = nil end
+	stopTPWalk()
+	if bv then bv:Destroy() bv = nil end
+	if gyro then gyro:Destroy() gyro = nil end
+	local humanoid = char and char:FindFirstChild("Humanoid")
+	if humanoid then humanoid.PlatformStand = false end
+end
+
+toggleBtn.MouseButton1Click:Connect(function()
+	enabled = not enabled
+	local char = player.Character
+
+	if enabled then
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+		toggleKnob.Position = UDim2.new(1, -17, 0.5, -7)
+		if char then enableEffect(char) end
+	else
+		toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+		toggleKnob.Position = UDim2.new(0, 3, 0.5, -7)
+		if char then disableEffect(char) end
+	end
+end)
+
+player.CharacterAdded:Connect(function(char)
+	if enabled then
+		task.wait(1)
+		enableEffect(char)
+	end
+end)
