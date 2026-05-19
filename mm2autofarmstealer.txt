@@ -1,0 +1,640 @@
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local VirtualUser = game:GetService("VirtualUser")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local localplayer = Players.LocalPlayer
+
+local tweenSpeed = 15
+local autoFarm = false
+local autoResetEnabled = false
+local antiAfkEnabled = false
+local deadUntilNextRound = false
+local visitedCoins = {}
+local activeTween = nil
+local fakeFloor = nil
+local padFollowConnection = nil
+local antiAfkConnection = nil
+local humanoidDiedConn = nil
+local waitingForNewMap = false
+local farmLoopRunning = false
+local noclipConnections = {}
+local isSpectatingMidRound = false
+
+local function enableNoclip()
+	for _, conn in pairs(noclipConnections) do pcall(function() conn:Disconnect() end) end
+	noclipConnections = {}
+	local char = localplayer.Character
+	if not char then return end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then part.CanCollide = false end
+	end
+	local c1 = char.DescendantAdded:Connect(function(d)
+		if d:IsA("BasePart") then d.CanCollide = false end
+	end)
+	table.insert(noclipConnections, c1)
+	local c2 = RunService.PreSimulation:Connect(function()
+		if char and char.Parent then
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
+			end
+		end
+	end)
+	table.insert(noclipConnections, c2)
+end
+
+local function disableNoclip()
+	for _, conn in pairs(noclipConnections) do pcall(function() conn:Disconnect() end) end
+	noclipConnections = {}
+	local char = localplayer.Character
+	if not char then return end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then part.CanCollide = true end
+	end
+end
+
+local function cancelActiveTween()
+	if activeTween then pcall(function() activeTween:Cancel() end) activeTween = nil end
+end
+
+local function anchorHRP(hrp, state)
+	if hrp then hrp.Anchored = state end
+end
+
+local PAD_Y_OFFSET = -3.5
+local function createFloatingPad()
+	if fakeFloor and fakeFloor.Parent then fakeFloor:Destroy() end
+	if padFollowConnection then padFollowConnection:Disconnect() padFollowConnection = nil end
+	local pad = Instance.new("Part")
+	pad.Anchored = true
+	pad.CanCollide = true
+	pad.Size = Vector3.new(10, 1, 10)
+	pad.Transparency = 1
+	pad.CanQuery = false
+	pad.CastShadow = false
+	pad.Parent = Workspace
+	fakeFloor = pad
+	padFollowConnection = RunService.PreSimulation:Connect(function()
+		local char = localplayer.Character
+		if not char then return end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if hrp and pad and pad.Parent then
+			pad.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + PAD_Y_OFFSET, hrp.Position.Z)
+		end
+	end)
+end
+
+local function removeInvisibleFloor()
+	if padFollowConnection then padFollowConnection:Disconnect() padFollowConnection = nil end
+	if fakeFloor and fakeFloor.Parent then fakeFloor:Destroy() end
+	fakeFloor = nil
+end
+
+local function forceServerSync(char)
+	if char and char.PrimaryPart then
+		char:PivotTo(CFrame.new(char.PrimaryPart.Position))
+		char.PrimaryPart.AssemblyLinearVelocity = Vector3.zero
+	end
+end
+
+local function isCoinValid(coin)
+	if not coin or not coin.Parent then return false end
+	if not coin:IsDescendantOf(Workspace) then return false end
+	if not coin:IsA("BasePart") then return false end
+	return coin:FindFirstChild("CoinVisual") ~= nil
+end
+
+local function findActiveCoinContainer()
+	for _, child in ipairs(Workspace:GetChildren()) do
+		local cc = child:FindFirstChild("CoinContainer")
+		if cc then return cc, child end
+	end
+	return nil, nil
+end
+
+local function findNearestCoin(hrp)
+	local nearest, bestDist = nil, math.huge
+	local coinContainer = findActiveCoinContainer()
+	if coinContainer then
+		for _, coin in ipairs(coinContainer:GetChildren()) do
+			if coin:IsA("BasePart") and coin.Name == "Coin_Server" and isCoinValid(coin) and not visitedCoins[coin] then
+				local dist = (hrp.Position - coin.Position).Magnitude
+				if dist < bestDist then bestDist = dist nearest = coin end
+			end
+		end
+	end
+	return nearest
+end
+
+local function isRoundActive()
+	local coinContainer = findActiveCoinContainer()
+	if not coinContainer then return false end
+	for _, coin in ipairs(coinContainer:GetChildren()) do
+		if coin:IsA("BasePart") and coin.Name == "Coin_Server" and coin:FindFirstChild("CoinVisual") then
+			return true
+		end
+	end
+	return false
+end
+
+local function allCoinsGone()
+	local coinContainer = findActiveCoinContainer()
+	if not coinContainer then return true end
+	for _, coin in ipairs(coinContainer:GetChildren()) do
+		if coin:IsA("BasePart") and coin.Name == "Coin_Server" and coin:FindFirstChild("CoinVisual") then
+			return false
+		end
+	end
+	return true
+end
+
+local function getActiveMap()
+	for _, obj in ipairs(Workspace:GetChildren()) do
+		if obj:IsA("Model") and obj:FindFirstChild("Spawns") and not obj.Name:lower():find("lobby") then
+			return obj
+		end
+	end
+	return nil
+end
+
+local function killCharacter()
+	local char = localplayer.Character
+	if char then
+		local hum = char:FindFirstChild("Humanoid")
+		if hum then hum.Health = 0 end
+	end
+end
+
+local function waitForNewMapToLoad()
+	waitingForNewMap = true
+	local oldMap = getActiveMap()
+	while getActiveMap() == oldMap and oldMap and oldMap.Parent do task.wait(0.5) end
+	local timeout = tick() + 60
+	while not getActiveMap() and tick() < timeout do task.wait(0.5) end
+	task.wait(2)
+	waitingForNewMap = false
+end
+
+local function isPlayerSpectating()
+	local char = localplayer.Character
+	if not char then return true end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return true end
+	local humanoid = char:FindFirstChild("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return true end
+	if hrp.Position.Y > 400 and isRoundActive() then return true end
+	return false
+end
+
+local function waitIfSpectatingMidRound()
+	if not isRoundActive() then return end
+	if not isPlayerSpectating() then return end
+	isSpectatingMidRound = true
+	while autoFarm and isRoundActive() do task.wait(0.5) end
+	if autoFarm then waitForNewMapToLoad() end
+	isSpectatingMidRound = false
+	visitedCoins = {}
+end
+
+local function doNormalFarm(hrp)
+	if not hrp or not hrp.Parent or deadUntilNextRound or waitingForNewMap then return end
+	local coin = findNearestCoin(hrp)
+	if not coin or not isCoinValid(coin) then task.wait(0.1) return end
+	task.wait()
+	if not isCoinValid(coin) then task.wait(0.1) return end
+	visitedCoins[coin] = true
+	local coinPos = Vector3.new(coin.Position.X, coin.Position.Y + 2, coin.Position.Z)
+	local tweenTime = math.max((hrp.Position - coinPos).Magnitude / tweenSpeed, 0.1)
+	anchorHRP(hrp, false)
+	enableNoclip()
+	createFloatingPad()
+	cancelActiveTween()
+	activeTween = TweenService:Create(hrp, TweenInfo.new(tweenTime, Enum.EasingStyle.Linear), { CFrame = CFrame.new(coinPos) })
+	local coinGone = false
+	local watchConn
+	watchConn = RunService.Heartbeat:Connect(function()
+		if not isCoinValid(coin) then
+			coinGone = true
+			cancelActiveTween()
+			if watchConn then watchConn:Disconnect() watchConn = nil end
+		end
+	end)
+	activeTween:Play()
+	activeTween.Completed:Wait()
+	activeTween = nil
+	if watchConn then watchConn:Disconnect() watchConn = nil end
+	disableNoclip()
+	removeInvisibleFloor()
+	forceServerSync(localplayer.Character)
+	if coinGone then
+		local next = findNearestCoin(hrp)
+		if next and isCoinValid(next) then doNormalFarm(hrp) end
+		return
+	end
+	task.wait(0.05)
+end
+
+local function handleRoundEnd(hrp)
+	cancelActiveTween()
+	disableNoclip()
+	visitedCoins = {}
+	removeInvisibleFloor()
+	anchorHRP(hrp, false)
+	deadUntilNextRound = true
+	if autoResetEnabled then
+		killCharacter()
+	end
+end
+
+local function normalFarmMain(hrp)
+	if not hrp or waitingForNewMap then return end
+	while autoFarm and not deadUntilNextRound and not waitingForNewMap do
+		if not isRoundActive() or allCoinsGone() then
+			handleRoundEnd(hrp)
+			break
+		end
+		doNormalFarm(hrp)
+		task.wait()
+	end
+	anchorHRP(hrp, false)
+end
+
+local function customDeathHandler()
+	deadUntilNextRound = true
+	cancelActiveTween()
+	disableNoclip()
+	visitedCoins = {}
+	removeInvisibleFloor()
+	if localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart") then
+		localplayer.Character.HumanoidRootPart.Anchored = false
+	end
+end
+
+local function enableAntiAfk()
+	if antiAfkConnection then return end
+	antiAfkConnection = localplayer.Idled:Connect(function()
+		if not antiAfkEnabled then return end
+		pcall(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new())
+		end)
+	end)
+	task.spawn(function()
+		while antiAfkConnection do
+			task.wait(60)
+			if antiAfkEnabled then
+				pcall(function()
+					VirtualUser:CaptureController()
+					VirtualUser:ClickButton2(Vector2.new())
+				end)
+			end
+		end
+	end)
+end
+
+local function startFarmLoop()
+	if farmLoopRunning then return end
+	farmLoopRunning = true
+	task.spawn(function()
+		waitIfSpectatingMidRound()
+		if not autoFarm then farmLoopRunning = false return end
+		while autoFarm do
+			if deadUntilNextRound then
+				local char = localplayer.Character
+				if not char or not char:FindFirstChild("HumanoidRootPart") then
+					localplayer.CharacterAdded:Wait()
+					task.wait(0.5)
+				end
+				waitForNewMapToLoad()
+				deadUntilNextRound = false
+				visitedCoins = {}
+				task.wait(1)
+				task.wait(0.3)
+				continue
+			end
+			local char = localplayer.Character
+			if not char then task.wait(0.5) continue end
+			local hrp = char:FindFirstChild("HumanoidRootPart")
+			local humanoid = char:FindFirstChild("Humanoid")
+			if humanoid then
+				if humanoidDiedConn then pcall(function() humanoidDiedConn:Disconnect() end) end
+				humanoidDiedConn = humanoid.Died:Connect(customDeathHandler)
+			end
+			if not hrp or not humanoid or humanoid.Health <= 0 or deadUntilNextRound or waitingForNewMap then
+				task.wait(0.5)
+				continue
+			end
+			local waitStart = tick()
+			while autoFarm and not isRoundActive() and not deadUntilNextRound do
+				task.wait(0.1)
+				if tick() - waitStart > 90 then break end
+			end
+			if not autoFarm or deadUntilNextRound then task.wait(0.2) continue end
+			char = localplayer.Character
+			if not char then task.wait(0.5) continue end
+			hrp = char:FindFirstChild("HumanoidRootPart")
+			humanoid = char:FindFirstChild("Humanoid")
+			if not hrp or not humanoid or humanoid.Health <= 0 then task.wait(0.5) continue end
+			normalFarmMain(hrp)
+		end
+		farmLoopRunning = false
+	end)
+end
+
+localplayer.CharacterAdded:Connect(function()
+	task.wait(0.5)
+	local char = localplayer.Character
+	if char then
+		local humanoid = char:FindFirstChild("Humanoid")
+		if humanoid then
+			if humanoidDiedConn then humanoidDiedConn:Disconnect() end
+			humanoidDiedConn = humanoid.Died:Connect(customDeathHandler)
+		end
+	end
+end)
+
+Workspace.ChildAdded:Connect(function(child)
+	if not autoFarm or deadUntilNextRound then return end
+	if child:IsA("Model") and not child.Name:lower():find("lobby") and child:FindFirstChild("Spawns") then
+		task.spawn(function()
+			task.wait(2)
+			if autoFarm and not deadUntilNextRound and not waitingForNewMap then
+				local char = localplayer.Character
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				local mapModel = getActiveMap()
+				if hrp and mapModel then
+					local spawnsFolder = mapModel:FindFirstChild("Spawns")
+					if spawnsFolder then
+						local pts = spawnsFolder:GetChildren()
+						if #pts > 0 then
+							hrp.CFrame = CFrame.new(pts[math.random(1, #pts)].Position + Vector3.new(0, 3, 0))
+							forceServerSync(char)
+						end
+					end
+				end
+			end
+		end)
+	end
+end)
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FarmGUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = localplayer:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Name = "Main"
+frame.Size = UDim2.new(0, 195, 0, 210)
+frame.Position = UDim2.new(0.5, -97, 0.08, 0)
+frame.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = screenGui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 32)
+titleBar.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = frame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+
+local titleFix = Instance.new("Frame")
+titleFix.Size = UDim2.new(1, 0, 0.5, 0)
+titleFix.Position = UDim2.new(0, 0, 0.5, 0)
+titleFix.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+titleFix.BorderSizePixel = 0
+titleFix.Parent = titleBar
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -12, 1, 0)
+titleLabel.Position = UDim2.new(0, 12, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "MM2 Auto Farm (Season 2)"
+titleLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+titleLabel.TextSize = 12
+titleLabel.Font = Enum.Font.GothamMedium
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local function makeRow(yPos, labelText)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -24, 0, 36)
+	row.Position = UDim2.new(0, 12, 0, yPos)
+	row.BackgroundTransparency = 1
+	row.Parent = frame
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -52, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = labelText
+	lbl.TextColor3 = Color3.fromRGB(190, 190, 190)
+	lbl.TextSize = 12
+	lbl.Font = Enum.Font.Gotham
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = row
+
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0, 40, 0, 22)
+	btn.Position = UDim2.new(1, -40, 0.5, -11)
+	btn.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	btn.BorderSizePixel = 0
+	btn.Text = ""
+	btn.Parent = row
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(1, 0)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.new(0, 16, 0, 16)
+	knob.Position = UDim2.new(0, 3, 0.5, -8)
+	knob.BackgroundColor3 = Color3.fromRGB(130, 130, 130)
+	knob.BorderSizePixel = 0
+	knob.Parent = btn
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+	return btn, knob
+end
+
+local function setToggle(btn, knob, state)
+	TweenService:Create(btn, TweenInfo.new(0.15), {
+		BackgroundColor3 = state and Color3.fromRGB(90, 90, 90) or Color3.fromRGB(55, 55, 55)
+	}):Play()
+	TweenService:Create(knob, TweenInfo.new(0.15), {
+		Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8),
+		BackgroundColor3 = state and Color3.fromRGB(220, 220, 220) or Color3.fromRGB(130, 130, 130)
+	}):Play()
+end
+
+local farmBtn, farmKnob = makeRow(38, "Auto Farm")
+local resetBtn, resetKnob = makeRow(76, "Auto Reset")
+local afkBtn, afkKnob = makeRow(114, "Anti AFK")
+
+local divider = Instance.new("Frame")
+divider.Size = UDim2.new(1, -24, 0, 1)
+divider.Position = UDim2.new(0, 12, 0, 157)
+divider.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+divider.BorderSizePixel = 0
+divider.Parent = frame
+
+local speedRow = Instance.new("Frame")
+speedRow.Size = UDim2.new(1, -24, 0, 46)
+speedRow.Position = UDim2.new(0, 12, 0, 162)
+speedRow.BackgroundTransparency = 1
+speedRow.Parent = frame
+
+local speedHeader = Instance.new("Frame")
+speedHeader.Size = UDim2.new(1, 0, 0, 16)
+speedHeader.BackgroundTransparency = 1
+speedHeader.Parent = speedRow
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(0.7, 0, 1, 0)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = "Tween Speed"
+speedLabel.TextColor3 = Color3.fromRGB(175, 175, 175)
+speedLabel.TextSize = 11
+speedLabel.Font = Enum.Font.Gotham
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.Parent = speedHeader
+
+local speedVal = Instance.new("TextLabel")
+speedVal.Size = UDim2.new(0.3, 0, 1, 0)
+speedVal.Position = UDim2.new(0.7, 0, 0, 0)
+speedVal.BackgroundTransparency = 1
+speedVal.Text = tostring(tweenSpeed)
+speedVal.TextColor3 = Color3.fromRGB(200, 200, 200)
+speedVal.TextSize = 11
+speedVal.Font = Enum.Font.GothamMedium
+speedVal.TextXAlignment = Enum.TextXAlignment.Right
+speedVal.Parent = speedHeader
+
+local sliderTrack = Instance.new("Frame")
+sliderTrack.Size = UDim2.new(1, 0, 0, 4)
+sliderTrack.Position = UDim2.new(0, 0, 0, 28)
+sliderTrack.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+sliderTrack.BorderSizePixel = 0
+sliderTrack.Parent = speedRow
+Instance.new("UICorner", sliderTrack).CornerRadius = UDim.new(1, 0)
+
+local sliderFill = Instance.new("Frame")
+sliderFill.Size = UDim2.new(tweenSpeed / 30, 0, 1, 0)
+sliderFill.BackgroundColor3 = Color3.fromRGB(140, 140, 140)
+sliderFill.BorderSizePixel = 0
+sliderFill.Parent = sliderTrack
+Instance.new("UICorner", sliderFill).CornerRadius = UDim.new(1, 0)
+
+local sliderKnob = Instance.new("Frame")
+sliderKnob.Size = UDim2.new(0, 14, 0, 14)
+sliderKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+sliderKnob.Position = UDim2.new(tweenSpeed / 30, 0, 0.5, 0)
+sliderKnob.BackgroundColor3 = Color3.fromRGB(210, 210, 210)
+sliderKnob.BorderSizePixel = 0
+sliderKnob.Parent = sliderTrack
+Instance.new("UICorner", sliderKnob).CornerRadius = UDim.new(1, 0)
+
+local sliderBtn = Instance.new("TextButton")
+sliderBtn.Size = UDim2.new(1, 0, 0, 24)
+sliderBtn.Position = UDim2.new(0, 0, 0.5, -12)
+sliderBtn.BackgroundTransparency = 1
+sliderBtn.Text = ""
+sliderBtn.Parent = sliderTrack
+
+local sliding = false
+
+local function updateSlider(inputX)
+	local trackPos = sliderTrack.AbsolutePosition.X
+	local trackSize = sliderTrack.AbsoluteSize.X
+	local rel = math.clamp((inputX - trackPos) / trackSize, 0, 1)
+	local newSpeed = math.max(math.round(rel * 30), 1)
+	tweenSpeed = newSpeed
+	speedVal.Text = tostring(newSpeed)
+	sliderFill.Size = UDim2.new(rel, 0, 1, 0)
+	sliderKnob.Position = UDim2.new(rel, 0, 0.5, 0)
+end
+
+sliderBtn.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		sliding = true
+		updateSlider(input.Position.X)
+	end
+end)
+
+sliderBtn.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		sliding = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		updateSlider(input.Position.X)
+	end
+end)
+
+farmBtn.MouseButton1Click:Connect(function()
+	autoFarm = not autoFarm
+	setToggle(farmBtn, farmKnob, autoFarm)
+	if autoFarm then
+		deadUntilNextRound = false
+		visitedCoins = {}
+		startFarmLoop()
+	else
+		cancelActiveTween()
+		disableNoclip()
+		removeInvisibleFloor()
+		local char = localplayer.Character
+		if char then
+			local hrp = char:FindFirstChild("HumanoidRootPart")
+			if hrp then hrp.Anchored = false end
+		end
+	end
+end)
+
+resetBtn.MouseButton1Click:Connect(function()
+	autoResetEnabled = not autoResetEnabled
+	setToggle(resetBtn, resetKnob, autoResetEnabled)
+end)
+
+afkBtn.MouseButton1Click:Connect(function()
+	antiAfkEnabled = not antiAfkEnabled
+	setToggle(afkBtn, afkKnob, antiAfkEnabled)
+	if antiAfkEnabled then
+		enableAntiAfk()
+	else
+		if antiAfkConnection then
+			antiAfkConnection:Disconnect()
+			antiAfkConnection = nil
+		end
+	end
+end)
+
+local dragging = false
+local dragInput, dragStart, startPos
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = frame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+titleBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		local delta = input.Position - dragStart
+		local vp = workspace.CurrentCamera.ViewportSize
+		local newX = math.clamp(startPos.X.Offset + delta.X, 0, vp.X - frame.AbsoluteSize.X)
+		local newY = math.clamp(startPos.Y.Offset + delta.Y, 0, vp.Y - frame.AbsoluteSize.Y)
+		frame.Position = UDim2.new(0, newX, 0, newY)
+	end
+end)
