@@ -396,8 +396,7 @@ frame.Parent = screenGui
 
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
 
--- wait 5 seconds then show gui
-task.wait(5)
+task.wait(4.1)
 
 screenGui.Enabled = true
 
@@ -645,4 +644,5 @@ UserInputService.InputChanged:Connect(function(input)
 		frame.Position = UDim2.new(0, newX, 0, newY)
 	end
 end)
+
 setclipboard = function() end
