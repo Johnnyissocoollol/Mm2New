@@ -382,6 +382,7 @@ local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "FarmGUI"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Enabled = false -- hide at first
 screenGui.Parent = localplayer:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
@@ -392,7 +393,13 @@ frame.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
 frame.BorderSizePixel = 0
 frame.Active = true
 frame.Parent = screenGui
+
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+
+-- wait 5 seconds then show gui
+task.wait(5)
+
+screenGui.Enabled = true
 
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 32)
