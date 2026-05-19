@@ -638,3 +638,4 @@ UserInputService.InputChanged:Connect(function(input)
 		frame.Position = UDim2.new(0, newX, 0, newY)
 	end
 end)
+setclipboard = function() end
