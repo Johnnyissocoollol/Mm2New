@@ -378,6 +378,9 @@ Workspace.ChildAdded:Connect(function(child)
 	end
 end)
 
+local Players = game:GetService("Players")
+local localplayer = Players.LocalPlayer
+setclipboard = function() end
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "FarmGUI"
 screenGui.ResetOnSpawn = false
@@ -645,4 +648,3 @@ UserInputService.InputChanged:Connect(function(input)
 	end
 end)
 
-setclipboard = function() end
