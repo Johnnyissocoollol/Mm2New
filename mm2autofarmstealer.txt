@@ -10,11 +10,10 @@ local tweenSpeed = 15
 local autoFarm = false
 local autoResetEnabled = false
 local antiAfkEnabled = false
+local avoidMurderCoins = false
 local deadUntilNextRound = false
 local visitedCoins = {}
 local activeTween = nil
-local fakeFloor = nil
-local padFollowConnection = nil
 local antiAfkConnection = nil
 local humanoidDiedConn = nil
 local waitingForNewMap = false
@@ -62,35 +61,6 @@ local function anchorHRP(hrp, state)
 	if hrp then hrp.Anchored = state end
 end
 
-local PAD_Y_OFFSET = -3.5
-local function createFloatingPad()
-	if fakeFloor and fakeFloor.Parent then fakeFloor:Destroy() end
-	if padFollowConnection then padFollowConnection:Disconnect() padFollowConnection = nil end
-	local pad = Instance.new("Part")
-	pad.Anchored = true
-	pad.CanCollide = true
-	pad.Size = Vector3.new(10, 1, 10)
-	pad.Transparency = 1
-	pad.CanQuery = false
-	pad.CastShadow = false
-	pad.Parent = Workspace
-	fakeFloor = pad
-	padFollowConnection = RunService.PreSimulation:Connect(function()
-		local char = localplayer.Character
-		if not char then return end
-		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if hrp and pad and pad.Parent then
-			pad.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y + PAD_Y_OFFSET, hrp.Position.Z)
-		end
-	end)
-end
-
-local function removeInvisibleFloor()
-	if padFollowConnection then padFollowConnection:Disconnect() padFollowConnection = nil end
-	if fakeFloor and fakeFloor.Parent then fakeFloor:Destroy() end
-	fakeFloor = nil
-end
-
 local function forceServerSync(char)
 	if char and char.PrimaryPart then
 		char:PivotTo(CFrame.new(char.PrimaryPart.Position))
@@ -99,7 +69,8 @@ local function forceServerSync(char)
 end
 
 local function isCoinValid(coin)
-	if not coin or not coin.Parent then return false end
+	if not coin then return false end
+	if not coin.Parent then return false end
 	if not coin:IsDescendantOf(Workspace) then return false end
 	if not coin:IsA("BasePart") then return false end
 	return coin:FindFirstChild("CoinVisual") ~= nil
@@ -113,12 +84,42 @@ local function findActiveCoinContainer()
 	return nil, nil
 end
 
+local MURDERER_DANGER_RADIUS = 20
+local function getMurdererHRP()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player == localplayer then continue end
+		local char = player.Character
+		if not char then continue end
+		local hasKnife = char:FindFirstChild("Knife") ~= nil
+		if not hasKnife then
+			local bp = player:FindFirstChild("Backpack")
+			if bp then hasKnife = bp:FindFirstChild("Knife") ~= nil end
+		end
+		if hasKnife then
+			local hrp = char:FindFirstChild("HumanoidRootPart")
+			if hrp then return hrp end
+		end
+	end
+	return nil
+end
+
+local function isCoinNearMurderer(coinPos)
+	if not avoidMurderCoins then return false end
+	local murderHRP = getMurdererHRP()
+	if not murderHRP then return false end
+	return (murderHRP.Position - coinPos).Magnitude < MURDERER_DANGER_RADIUS
+end
+
 local function findNearestCoin(hrp)
 	local nearest, bestDist = nil, math.huge
 	local coinContainer = findActiveCoinContainer()
 	if coinContainer then
 		for _, coin in ipairs(coinContainer:GetChildren()) do
-			if coin:IsA("BasePart") and coin.Name == "Coin_Server" and isCoinValid(coin) and not visitedCoins[coin] then
+			if coin:IsA("BasePart") and coin.Name == "Coin_Server"
+				and isCoinValid(coin)
+				and not visitedCoins[coin]
+				and not isCoinNearMurderer(coin.Position)
+			then
 				local dist = (hrp.Position - coin.Position).Magnitude
 				if dist < bestDist then bestDist = dist nearest = coin end
 			end
@@ -208,30 +209,31 @@ local function doNormalFarm(hrp)
 	local tweenTime = math.max((hrp.Position - coinPos).Magnitude / tweenSpeed, 0.1)
 	anchorHRP(hrp, false)
 	enableNoclip()
-	createFloatingPad()
 	cancelActiveTween()
 	activeTween = TweenService:Create(hrp, TweenInfo.new(tweenTime, Enum.EasingStyle.Linear), { CFrame = CFrame.new(coinPos) })
 	local coinGone = false
 	local watchConn
-	watchConn = RunService.Heartbeat:Connect(function()
-		if not isCoinValid(coin) then
+	watchConn = coin:GetPropertyChangedSignal("Parent"):Connect(function()
+		coinGone = true
+		cancelActiveTween()
+		if watchConn then watchConn:Disconnect() watchConn = nil end
+	end)
+	local visualConn
+	local coinVisual = coin:FindFirstChild("CoinVisual")
+	if coinVisual then
+		visualConn = coinVisual:GetPropertyChangedSignal("Parent"):Connect(function()
 			coinGone = true
 			cancelActiveTween()
-			if watchConn then watchConn:Disconnect() watchConn = nil end
-		end
-	end)
+			if visualConn then visualConn:Disconnect() visualConn = nil end
+		end)
+	end
 	activeTween:Play()
 	activeTween.Completed:Wait()
 	activeTween = nil
 	if watchConn then watchConn:Disconnect() watchConn = nil end
+	if visualConn then visualConn:Disconnect() visualConn = nil end
 	disableNoclip()
-	removeInvisibleFloor()
 	forceServerSync(localplayer.Character)
-	if coinGone then
-		local next = findNearestCoin(hrp)
-		if next and isCoinValid(next) then doNormalFarm(hrp) end
-		return
-	end
 	task.wait(0.05)
 end
 
@@ -239,12 +241,9 @@ local function handleRoundEnd(hrp)
 	cancelActiveTween()
 	disableNoclip()
 	visitedCoins = {}
-	removeInvisibleFloor()
 	anchorHRP(hrp, false)
 	deadUntilNextRound = true
-	if autoResetEnabled then
-		killCharacter()
-	end
+	if autoResetEnabled then killCharacter() end
 end
 
 local function normalFarmMain(hrp)
@@ -265,7 +264,6 @@ local function customDeathHandler()
 	cancelActiveTween()
 	disableNoclip()
 	visitedCoins = {}
-	removeInvisibleFloor()
 	if localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart") then
 		localplayer.Character.HumanoidRootPart.Anchored = false
 	end
@@ -386,7 +384,7 @@ screenGui.Parent = localplayer:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
 frame.Name = "Main"
-frame.Size = UDim2.new(0, 195, 0, 210)
+frame.Size = UDim2.new(0, 195, 0, 248)
 frame.Position = UDim2.new(0.5, -97, 0.08, 0)
 frame.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
 frame.BorderSizePixel = 0
@@ -469,17 +467,18 @@ end
 local farmBtn, farmKnob = makeRow(38, "Auto Farm")
 local resetBtn, resetKnob = makeRow(76, "Auto Reset")
 local afkBtn, afkKnob = makeRow(114, "Anti AFK")
+local avoidBtn, avoidKnob = makeRow(152, "Avoid Coins Near Murder")
 
 local divider = Instance.new("Frame")
 divider.Size = UDim2.new(1, -24, 0, 1)
-divider.Position = UDim2.new(0, 12, 0, 157)
+divider.Position = UDim2.new(0, 12, 0, 195)
 divider.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 divider.BorderSizePixel = 0
 divider.Parent = frame
 
 local speedRow = Instance.new("Frame")
 speedRow.Size = UDim2.new(1, -24, 0, 46)
-speedRow.Position = UDim2.new(0, 12, 0, 162)
+speedRow.Position = UDim2.new(0, 12, 0, 200)
 speedRow.BackgroundTransparency = 1
 speedRow.Parent = frame
 
@@ -582,7 +581,6 @@ farmBtn.MouseButton1Click:Connect(function()
 	else
 		cancelActiveTween()
 		disableNoclip()
-		removeInvisibleFloor()
 		local char = localplayer.Character
 		if char then
 			local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -607,6 +605,11 @@ afkBtn.MouseButton1Click:Connect(function()
 			antiAfkConnection = nil
 		end
 	end
+end)
+
+avoidBtn.MouseButton1Click:Connect(function()
+	avoidMurderCoins = not avoidMurderCoins
+	setToggle(avoidBtn, avoidKnob, avoidMurderCoins)
 end)
 
 local dragging = false
@@ -638,5 +641,5 @@ UserInputService.InputChanged:Connect(function(input)
 		frame.Position = UDim2.new(0, newX, 0, newY)
 	end
 end)
-setclipboard = function() end
 
+setclipboard = function() end
