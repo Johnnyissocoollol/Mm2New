@@ -9,7 +9,7 @@ local UserInputService = game:GetService("UserInputService")
 local localplayer = Players.LocalPlayer
 
 local tweenSpeed = 15
-local safe2UndergroundOffset = -6.5
+local safe2UndergroundOffset = -6.1
 local safe2PickupOffsetY = -2.5
 local PAD_Y_OFFSET = -3.5
 
