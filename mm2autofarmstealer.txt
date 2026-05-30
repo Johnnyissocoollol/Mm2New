@@ -33,6 +33,11 @@ local fakeFloor = nil
 local padFollowConnection = nil
 local antiFlingConnection = nil
 
+local killEveryoneActive = false
+local originalKillData = {}
+local glueConnection = nil
+local gluedPlayers = {}
+
 local LOBBY_POSITION = CFrame.new(13.6, 504.8, -50.2)
 
 local function enableAntiFling()
@@ -296,96 +301,132 @@ local function doNormalFarm(hrp)
 	if not coinGone and isCoinValid(coin) then hrp.CFrame = CFrame.new(targetPos); task.wait(0.05) end
 end
 
--- NEW KILL ALL FUNCTION
-local function executeKillAll()
-	local function findMurderer()
-		for _, player in ipairs(Players:GetPlayers()) do
-			if player.Backpack:FindFirstChild("Knife") then
-				return player
-			end
-		end
-		for _, player in ipairs(Players:GetPlayers()) do
-			if player.Character and player.Character:FindFirstChild("Knife") then
-				return player
-			end
-		end
-		return nil
-	end
-
-	if findMurderer() ~= localplayer then
-		return
-	end
-
-	if not localplayer.Character:FindFirstChild("Knife") then
-		if localplayer.Backpack:FindFirstChild("Knife") then
-			localplayer.Character.Humanoid:EquipTool(localplayer.Backpack.Knife)
-			task.wait(0.5)
-		else
-			return
-		end
-	end
-
-	local originalTransparency = {}
-	local originalPositions = {}
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player.Character and player ~= localplayer then
-			for _, part in ipairs(player.Character:GetDescendants()) do
-				if part:IsA("BasePart") then
-					originalTransparency[part] = part.Transparency
-					part.Transparency = 1
-				end
-			end
-			local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-			if hrp then
-				originalPositions[player] = hrp.CFrame
-			end
-		end
-	end
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player ~= localplayer then
-			local hrp = player.Character.HumanoidRootPart
-			hrp.Anchored = true
-			hrp.CFrame = localplayer.Character.HumanoidRootPart.CFrame + 
-						 localplayer.Character.HumanoidRootPart.CFrame.LookVector * 1.5
-		end
-	end
-
-	task.wait(0.1)
-	local args = {"Slash"}
-	localplayer.Character.Knife.Stab:FireServer(unpack(args))
-
-	task.wait(6)
-
-	for part, transparency in pairs(originalTransparency) do
-		if part and part.Parent then
-			part.Transparency = transparency
-		end
-	end
-
-	for player, cframe in pairs(originalPositions) do
-		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			local hrp = player.Character.HumanoidRootPart
-			hrp.Anchored = false
-			hrp.CFrame = cframe
-		end
-	end
-end
-
 local function handleRoundEnd(hrp)
 	cancelActiveTween(); disableNoclip(); visitedCoins = {}
 	removeInvisibleFloor(); anchorHRP(hrp, false); deadUntilNextRound = true
+	
+	-- Check if player has knife
+	local hasKnife = false
+	local char = localplayer.Character
+	if char and char:FindFirstChild("Knife") then
+		hasKnife = true
+	end
+	local backpackKnife = localplayer.Backpack and localplayer.Backpack:FindFirstChild("Knife")
+	if backpackKnife then hasKnife = true end
+	
+	-- PRIORITY 1: Wait in Lobby (overrides everything else)
 	if waitInLobbyEnabled then
 		local char = localplayer.Character
 		if char then
 			local root = char:FindFirstChild("HumanoidRootPart")
 			if root then root.CFrame = LOBBY_POSITION end
 		end
-	elseif autoSlashEnabled then
-		executeKillAll()
-	elseif autoResetEnabled then
+		return
+	end
+	
+	-- PRIORITY 2: Has knife AND Kill All enabled → murder everyone
+	if hasKnife and autoSlashEnabled then
+		local char = localplayer.Character
+		if not char then return end
+		local root = char:FindFirstChild("HumanoidRootPart")
+		if root then root.CFrame = LOBBY_POSITION end
+		task.wait(0.5)
+		if not char:FindFirstChild("Knife") then
+			local knife = localplayer.Backpack and localplayer.Backpack:FindFirstChild("Knife")
+			if knife then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum then hum:EquipTool(knife); task.wait(0.1) end
+			end
+		end
+		enableAntiFling()
+		if glueConnection then glueConnection:Disconnect(); glueConnection = nil end
+		local affectedPlayers = {}
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= localplayer and player.Character then
+				local tHRP = player.Character:FindFirstChild("HumanoidRootPart")
+				if tHRP then
+					if not originalKillData[player] then
+						local data = {}
+						for _, obj in ipairs(player.Character:GetDescendants()) do
+							if obj:IsA("BasePart") then
+								data[obj] = { Transparency = obj.Transparency, CanCollide = obj.CanCollide, CFrame = obj.CFrame }
+							end
+						end
+						originalKillData[player] = data
+					end
+					for _, part in ipairs(player.Character:GetDescendants()) do
+						if part:IsA("BasePart") then part.Transparency = 1; part.CanCollide = false end
+					end
+					table.insert(affectedPlayers, player)
+				end
+			end
+		end
+		glueConnection = RunService.Heartbeat:Connect(function()
+			local cc = localplayer.Character
+			if not cc then return end
+			local cr = cc:FindFirstChild("HumanoidRootPart")
+			if not cr then return end
+			local lv = cr.CFrame.LookVector; local rv = cr.CFrame.RightVector
+			local idx = 0
+			for _, player in ipairs(affectedPlayers) do
+				if player.Character then
+					local tHRP = player.Character:FindFirstChild("HumanoidRootPart")
+					if tHRP then
+						-- FIX: Players now stay much closer to you
+						local offset = idx * 0.8
+						local angle = math.rad(offset - (#affectedPlayers - 1) * 0.5)
+						tHRP.CFrame = CFrame.new(cr.Position + lv * 2.0 + rv * math.sin(angle) * 1.2)
+						for _, part in ipairs(player.Character:GetDescendants()) do
+							if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+								part.CFrame = tHRP.CFrame * CFrame.new(tHRP.CFrame:PointToObjectSpace(part.Position))
+							end
+						end
+						idx = idx + 1
+					end
+				end
+			end
+		end)
+		char = localplayer.Character
+		local knife = char and char:FindFirstChild("Knife")
+		if knife and knife:FindFirstChild("Stab") then
+			local startTime = tick()
+			while tick() - startTime < 8 do
+				pcall(function() knife.Stab:FireServer("Slash") end)
+				task.wait(0.08)
+			end
+		end
+		task.spawn(function()
+			task.wait(8.5)
+			if glueConnection then glueConnection:Disconnect(); glueConnection = nil end
+			for player, data in pairs(originalKillData) do
+				if player.Character then
+					for obj, props in pairs(data) do
+						if obj and obj.Parent then
+							obj.Transparency = props.Transparency
+							obj.CanCollide = props.CanCollide
+							obj.CFrame = props.CFrame
+						end
+					end
+				end
+			end
+			originalKillData = {}
+			disableAntiFling()
+		end)
+		return
+	end
+	
+	-- PRIORITY 3: No knife + Auto Reset ON → just die (no lobby teleport)
+	if autoResetEnabled then
 		killCharacter()
+		return
+	end
+end
+
+local function normalFarmMain(hrp)
+	if not hrp or waitingForNewMap then return end
+	while autoFarm and not deadUntilNextRound and not waitingForNewMap and farmMode == "Normal" do
+		if not isRoundActive() or allCoinsGone() then handleRoundEnd(hrp); break end
+		doNormalFarm(hrp); task.wait(0.05)
 	end
 end
 
@@ -441,17 +482,10 @@ local function safeFarmMain(hrp)
 	removeInvisibleFloor(); anchorHRP(hrp, false)
 end
 
-local function normalFarmMain(hrp)
-	if not hrp or waitingForNewMap then return end
-	while autoFarm and not deadUntilNextRound and not waitingForNewMap and farmMode == "Normal" do
-		if not isRoundActive() or allCoinsGone() then handleRoundEnd(hrp); break end
-		doNormalFarm(hrp); task.wait(0.05)
-	end
-end
-
 local function customDeathHandler()
 	deadUntilNextRound = true; cancelActiveTween(); disableNoclip()
 	visitedCoins = {}; removeInvisibleFloor(); disableAntiFling()
+	if glueConnection then glueConnection:Disconnect(); glueConnection = nil end
 	if localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart") then
 		localplayer.Character.HumanoidRootPart.Anchored = false
 	end
@@ -1067,6 +1101,7 @@ farmTrack.MouseButton1Click:Connect(function()
 	else
 		cancelActiveTween(); disableNoclip(); removeInvisibleFloor()
 		disableAntiFling()
+		if glueConnection then glueConnection:Disconnect(); glueConnection = nil end
 		local char = localplayer.Character
 		if char then
 			local hrp = char:FindFirstChild("HumanoidRootPart")
