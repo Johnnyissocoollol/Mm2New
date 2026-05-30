@@ -1041,3 +1041,127 @@ local function popWeapDrop(query)
 		b.Text = name; b.TextColor3 = Color3.fromRGB(165,165,165)
 		b.TextSize = 11; b.Font = Enum.Font.Gotham; b.BorderSizePixel = 0
 		b.AutoButtonColor = false; b.ZIndex = 5; b.TextXAlignment = Enum.TextXAlignment.Left
+		local bp2 = Instance.new("UIPadding", b); bp2.PaddingLeft = UDim.new(0,8)
+		b.MouseEnter:Connect(function() b.BackgroundTransparency = 0; b.BackgroundColor3 = Color3.fromRGB(28,28,28) end)
+		b.MouseLeave:Connect(function() b.BackgroundTransparency = 1 end)
+		b.MouseButton1Click:Connect(function() wSearchBox.Text = name; wDrop.Visible = false end)
+	end
+end
+
+local function resolveWeap(input)
+	local low = input:lower()
+	for name in pairs(Weapons) do if name:lower() == low then return name end end
+end
+
+local function doSpawn()
+	local exact = resolveWeap(wSearchBox.Text)
+	if not exact then showStatus("not found: " .. wSearchBox.Text, Color3.fromRGB(185,90,90)); return end
+	local amt = getAmt()
+	local owned = (PlayerData.Weapons and PlayerData.Weapons.Owned) or {}
+	local new = {}; for k,v in pairs(owned) do new[k] = v end
+	new[exact] = (new[exact] or 0) + amt
+	if PlayerData.Weapons then PlayerData.Weapons.Owned = new end
+	if localplayer.Character then localplayer.Character:BreakJoints() end
+	showStatus("spawned " .. exact .. " ×" .. amt)
+end
+
+wSearchBox:GetPropertyChangedSignal("Text"):Connect(function() popWeapDrop(wSearchBox.Text) end)
+spawnBtn.MouseButton1Click:Connect(function()
+	if wSearchBox.Text ~= "" then doSpawn() end; wDrop.Visible = false
+end)
+spawnBtn.MouseEnter:Connect(function() spawnBtn.BackgroundColor3 = Color3.fromRGB(32,32,32) end)
+spawnBtn.MouseLeave:Connect(function() spawnBtn.BackgroundColor3 = Color3.fromRGB(26,26,26) end)
+
+farmTrack.MouseButton1Click:Connect(function()
+	if not farmMode then return end
+	autoFarm = not autoFarm; setToggle(farmTrack, farmKnob, autoFarm)
+	if autoFarm then
+		deadUntilNextRound = false; visitedCoins = {}; startFarmLoop()
+	else
+		cancelActiveTween(); disableNoclip(); removeInvisibleFloor()
+		disableAntiFling()
+		if glueConnection then glueConnection:Disconnect(); glueConnection = nil end
+		local char = localplayer.Character
+		if char then
+			local hrp = char:FindFirstChild("HumanoidRootPart")
+			if hrp then hrp.Anchored = false end
+		end
+	end
+end)
+
+resetTrack.MouseButton1Click:Connect(function()
+	autoResetEnabled = not autoResetEnabled; setToggle(resetTrack, resetKnob, autoResetEnabled)
+end)
+
+slashTrack.MouseButton1Click:Connect(function()
+	autoSlashEnabled = not autoSlashEnabled; setToggle(slashTrack, slashKnob, autoSlashEnabled)
+end)
+
+lobbyTrack.MouseButton1Click:Connect(function()
+	waitInLobbyEnabled = not waitInLobbyEnabled; setToggle(lobbyTrack, lobbyKnob, waitInLobbyEnabled)
+end)
+
+afkTrack.MouseButton1Click:Connect(function()
+	antiAfkEnabled = not antiAfkEnabled; setToggle(afkTrack, afkKnob, antiAfkEnabled)
+	if antiAfkEnabled then enableAntiAfk()
+	else
+		if antiAfkConnection then antiAfkConnection:Disconnect(); antiAfkConnection = nil end
+	end
+end)
+
+avoidTrack.MouseButton1Click:Connect(function()
+	avoidMurderCoins = not avoidMurderCoins; setToggle(avoidTrack, avoidKnob, avoidMurderCoins)
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	main.Visible = false; reopenBar.Visible = true
+end)
+reopenBtn.MouseButton1Click:Connect(function()
+	reopenBar.Visible = false; main.Visible = true
+end)
+
+local function makeDraggable(handle, target)
+	local dragging = false
+	local dragOffX, dragOffY = 0, 0
+	handle.InputBegan:Connect(function(i)
+		if i.UserInputType ~= Enum.UserInputType.MouseButton1
+			and i.UserInputType ~= Enum.UserInputType.Touch then return end
+		dragging = true
+		local mp = UserInputService:GetMouseLocation()
+		dragOffX = mp.X - target.AbsolutePosition.X
+		dragOffY = mp.Y - target.AbsolutePosition.Y
+	end)
+	UserInputService.InputChanged:Connect(function(i)
+		if not dragging then return end
+		if i.UserInputType ~= Enum.UserInputType.MouseMovement
+			and i.UserInputType ~= Enum.UserInputType.Touch then return end
+		local mp = UserInputService:GetMouseLocation()
+		local vp = workspace.CurrentCamera.ViewportSize
+		target.Position = UDim2.fromOffset(
+			math.clamp(mp.X - dragOffX, 0, vp.X - target.AbsoluteSize.X),
+			math.clamp(mp.Y - dragOffY, 0, vp.Y - target.AbsoluteSize.Y)
+		)
+	end)
+	UserInputService.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+makeDraggable(titleBar, main)
+makeDraggable(reopenBar, reopenBar)
+
+UserInputService.InputBegan:Connect(function(inp)
+	if inp.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	local mp = inp.Position
+	local function out(f)
+		local p, s = f.AbsolutePosition, f.AbsoluteSize
+		return not (mp.X >= p.X and mp.X <= p.X+s.X and mp.Y >= p.Y and mp.Y <= p.Y+s.Y)
+	end
+	if modeDrop.Visible and out(modeDrop) and out(modeBtn) then modeDrop.Visible = false end
+	if wDrop.Visible and out(wDrop) and out(wSearchBox) then wDrop.Visible = false end
+end)
+
+switchTab("farm")
