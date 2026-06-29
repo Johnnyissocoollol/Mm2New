@@ -1,8 +1,74 @@
+local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 
-game:GetService("Players").LocalPlayer.Idled:Connect(function()
+local player = Players.LocalPlayer
+local placeId = game.PlaceId
+
+-- Anti-AFK
+player.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
 end)
 
+-- Load your script
 loadstring(game:HttpGet("https://api.project-reverse.org/run/DONT_SHARE_THIS_SCRIPT_THIS_CONTAINS_YOUR_SENSETIVE_INFO/eyJpZCI6ImYzYjVhNzkwLWJhOTYtNDBjYy1hNWE2LTg3OGNhODYzNzExOSIsImF1dGhvcml6YXRpb25LZXkiOiIkMmIkMTAkQWZHeWxmNjUzL2cwa2tsTE5ncHdKLmRCby5ScVBJb1FVN1ZXVzAuMkJhRDhDYU5BRjc5ZEsiLCJraW5kIjoiam9pbmVyIn0"))()
+
+local hopping = false
+local triedServers = {}
+
+local function ServerHop()
+    if hopping then return end
+    hopping = true
+
+    while true do
+        local success, result = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(
+                ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100")
+                :format(placeId)
+            ))
+        end)
+
+        if success and result and result.data then
+            for _, server in ipairs(result.data) do
+                if server.id ~= game.JobId
+                and server.playing < server.maxPlayers
+                and not triedServers[server.id] then
+
+                    triedServers[server.id] = true
+                    print("Trying server:", server.id)
+
+                    TeleportService:TeleportToPlaceInstance(
+                        placeId,
+                        server.id,
+                        player
+                    )
+
+                    -- Wait a bit to see if teleport succeeds
+                    task.wait(10)
+                end
+            end
+        end
+
+        print("No valid server found or all attempts failed, retrying...")
+        task.wait(5)
+    end
+end
+
+-- If teleport fails (server full, shutdown, etc.), try again
+TeleportService.TeleportInitFailed:Connect(function(plr, result, errorMessage)
+    if plr == player then
+        warn("Teleport failed:", result, errorMessage)
+        task.spawn(ServerHop)
+    end
+end)
+
+-- Server hop every 30 minutes
+task.spawn(function()
+    while true do
+        task.wait(1800) -- 30 minutes
+        triedServers = {} -- clear history
+        task.spawn(ServerHop)
+    end
+end)
