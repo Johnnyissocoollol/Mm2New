@@ -46,7 +46,7 @@ local function rejoinGame()
     end)
 end
 
-task.delay(25, function()
+task.delay(10, function()
     if hasVisibleLoadingText() then
         rejoinGame()
     end
