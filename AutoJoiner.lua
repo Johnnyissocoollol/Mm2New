@@ -12,6 +12,6 @@ loadstring(game:HttpGet("https://api.project-reverse.org/run/DONT_SHARE_THIS_SCR
 local serverHopModule = loadstring(game:HttpGet"https://raw.githubusercontent.com/LeoKholYt/roblox/main/lk_serverhop.lua")()
 
 while true do
-    wait(840) -- 14 minutes in seconds
+    wait(540) -- 14 minutes in seconds
     serverHopModule:Teleport(game.PlaceId)
 end
